@@ -17,12 +17,12 @@ class UserAPITestCase(TestCase):
         self.client = APIClient()
 
     def test_create_user(self):
-        response = self.client.post(reverse('api:user'), data={"user_name": "sample_user"})
+        response = self.client.post(reverse('api:user'), data={"user_name": "sample_user", "is_admin": False})
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(User.objects.filter(user_name="sample_user").count(), 1)
         self.assertEqual(response.data["user_name"], 'sample_user')
 
-        response = self.client.post(reverse('api:user'), data={"user_name": "sample_user"})
+        response = self.client.post(reverse('api:user'), data={"user_name": "sample_user", "is_admin": False})
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
 
     def test_create_bad_request(self):
@@ -35,6 +35,7 @@ class LoanAPITestCase(TestCase):
         self.client = APIClient()
         self.user_1 = User.objects.create(user_name='sample_user_1')
         self.user_2 = User.objects.create(user_name='sample_user_2')
+        self.admin_user = User.objects.create(user_name='admin_user', is_admin=True)
         self.loan_1 = Loan.objects.create(amount=100, terms=2, user=self.user_1)
         Repayment.objects.create(loan=self.loan_1, amount=50, due_date=date(2023, 7, 31))
         Repayment.objects.create(loan=self.loan_1, amount=50, due_date=date(2023, 8, 6))
@@ -45,6 +46,7 @@ class LoanAPITestCase(TestCase):
 
         self.request_header_1 = {'HTTP_USERNAME': 'sample_user_1'}
         self.request_header_2 = {'HTTP_USERNAME': 'sample_user_2'}
+        self.admin_request_header = {'HTTP_USERNAME': 'admin_user'}
 
     def test_get_loans_unauthorized(self):
         response = self.client.get(reverse('api:loan'))
@@ -97,14 +99,15 @@ class LoanAPITestCase(TestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_approve_loan(self):
+        request_header = {}
         self.assertEqual(self.loan_1.status, LoanStatus.PENDING)
-        response = self.client.put('/approval/{}'.format(str(self.loan_1.id)))
+        response = self.client.put('/approval/{}'.format(str(self.loan_1.id)), **self.admin_request_header)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.loan_1.refresh_from_db()
         self.assertEqual(self.loan_1.status, LoanStatus.APPROVED)
 
     def test_approve_missing_loan(self):
-        response = self.client.put('/approval/5')
+        response = self.client.put('/approval/5', **self.admin_request_header)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
 
@@ -112,7 +115,9 @@ class RepaymentAPITestCase(TestCase):
     def setUp(self):
         self.client = APIClient()
         self.user = User.objects.create(user_name='sample_user')
+        self.admin_user = User.objects.create(user_name='admin_user', is_admin=True)
         self.request_header = {'HTTP_USERNAME': 'sample_user'}
+        self.admin_request_header = {'HTTP_USERNAME': 'admin_user'}
 
     def test_repay_loan_unauthorized(self):
         response = self.client.put('/repayment/1/1', data={'amount': 1500})
@@ -126,7 +131,7 @@ class RepaymentAPITestCase(TestCase):
         self.assertEqual(loan.status, LoanStatus.PENDING)
 
         # Approve the Loan
-        response = self.client.put('/approval/{}'.format(str(loan.id)))
+        response = self.client.put('/approval/{}'.format(str(loan.id)), **self.admin_request_header)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         loan.refresh_from_db()
         self.assertEqual(loan.status, LoanStatus.APPROVED)
@@ -164,7 +169,7 @@ class RepaymentAPITestCase(TestCase):
         self.assertEqual(loan.status, LoanStatus.PENDING)
 
         # Approve the Loan
-        response = self.client.put('/approval/{}'.format(str(loan.id)))
+        response = self.client.put('/approval/{}'.format(str(loan.id)), **self.admin_request_header)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         loan.refresh_from_db()
         self.assertEqual(loan.status, LoanStatus.APPROVED)
@@ -221,7 +226,7 @@ class RepaymentAPITestCase(TestCase):
         self.assertEqual(loan.status, LoanStatus.PENDING)
 
         # Approve the Loan
-        response = self.client.put('/approval/{}'.format(str(loan.id)))
+        response = self.client.put('/approval/{}'.format(str(loan.id)), **self.admin_request_header)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         loan.refresh_from_db()
         self.assertEqual(loan.status, LoanStatus.APPROVED)

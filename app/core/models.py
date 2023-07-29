@@ -26,14 +26,15 @@ class RepaymentStatus(enum.Enum):
 
 
 class UserManager(BaseUserManager):
-    def create_user(self, user_name):
-        user = self.model(user_name=user_name)
+    def create_user(self, user_name, is_admin):
+        user = self.model(user_name=user_name, is_admin=is_admin)
         user.save(using=self._db)
         return user
 
 
 class User(models.Model):
     user_name = models.CharField(max_length=50, unique=True)
+    is_admin = models.BooleanField(default=False)
     objects = UserManager()
 
 

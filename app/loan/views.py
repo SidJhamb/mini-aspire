@@ -1,6 +1,6 @@
 from django.contrib.auth.models import AnonymousUser
 from django.db.models import Sum
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, authentication_classes
 from rest_framework.generics import GenericAPIView
 from loan import serializers
 from rest_framework.response import Response
@@ -28,10 +28,19 @@ class AuthMixin:
     def authenticate_request(request):
         return not isinstance(request.user, AnonymousUser)
 
+    @staticmethod
+    def authenticate_admin_request(request):
+        return not isinstance(request.user, AnonymousUser) and request.user.is_admin
+
 
 @api_view(['PUT'])
+@authentication_classes([BasicRequestBodyAuthentication])
 def loan_approval(request, loan_id):
+    """Handles loan approvals by the admin user."""
     try:
+        if not AuthMixin.authenticate_admin_request(request):
+            return Response(data={'error': INVALID_USER_CREDENTIALS}, status=status.HTTP_401_UNAUTHORIZED)
+
         loan = Loan.objects.get(id=loan_id)
         loan.status = LoanStatus.APPROVED
         loan.save(update_fields=['status'])
@@ -43,34 +52,31 @@ def loan_approval(request, loan_id):
         return Response({'error': str(ex)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-def is_date_difference_less_than_one_week(date1, date2):
-    # Calculate the difference between the two dates
-    date_difference = date1 - date2
-
-    # Get a timedelta representing 1 week (7 days)
-    one_week_timedelta = timedelta(weeks=1)
-
-    # Compare the date difference with 1 week
-    return abs(date_difference) <= one_week_timedelta
-
-
 class UserView(GenericAPIView):
     serializer_class = UserSerializer
 
     def post(self, request):
-        user_name = request.data.get('user_name')
-
-        if not user_name:
-            return Response({'error': 'Please provide a user_name in the request body.'},
-                            status=status.HTTP_400_BAD_REQUEST)
-
+        """Handles creation of new user records."""
         try:
+            user_name = request.data.get('user_name')
+            is_admin = request.data.get('is_admin')
+
+            if not user_name:
+                return Response({'error': 'Please provide the user_name in request body.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+
+            if not is_admin:
+                return Response({'error': 'Please provide the is_admin flag in request body.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+
             user = User.objects.get(user_name=user_name)
             return Response({'error': 'User with this ID already exists.'}, status=status.HTTP_409_CONFLICT)
         except User.DoesNotExist:
-            user = User.objects.create_user(user_name=user_name)
+            user = User.objects.create_user(user_name=user_name, is_admin=is_admin)
             serializer = self.serializer_class(user)
             return Response(serializer.data, status=201)
+        except Exception as ex:
+            return Response({'error': str(ex)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class LoanView(GenericAPIView, AuthMixin):
@@ -78,6 +84,7 @@ class LoanView(GenericAPIView, AuthMixin):
     authentication_classes = (BasicRequestBodyAuthentication,)
 
     def get(self, request):
+        """Handles retrieving ALL loan records for a particular user."""
         try:
             if not self.authenticate_request(request):
                 return Response(data={'error': INVALID_USER_CREDENTIALS}, status=status.HTTP_401_UNAUTHORIZED)
@@ -89,6 +96,7 @@ class LoanView(GenericAPIView, AuthMixin):
             return Response({'error': str(ex)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def post(self, request):
+        """Handles creation of new loan record for a particular user."""
         try:
             if not self.authenticate_request(request):
                 return Response(data={"error": INVALID_USER_CREDENTIALS}, status=status.HTTP_401_UNAUTHORIZED)
@@ -117,6 +125,9 @@ class RepaymentView(GenericAPIView, AuthMixin):
 
     @staticmethod
     def balance_repayments(loan):
+        """
+        This balances the pending repayment ampounts if the incoming repayment amount is more than the expected value.
+        """
         paid_repayments_amount = Repayment.objects.filter(status=RepaymentStatus.PAID, loan_id=loan.id).aggregate(Sum('amount'))['amount__sum']
         balance_amount = loan.amount - paid_repayments_amount
 
@@ -127,11 +138,13 @@ class RepaymentView(GenericAPIView, AuthMixin):
 
     @staticmethod
     def mark_loan_paid(loan):
+        """This marks a loan as paid if all the repayments against it have been marked as paid."""
         if not Repayment.objects.filter(loan_id=loan.id, status=RepaymentStatus.PENDING).exists():
             loan.status = LoanStatus.PAID
             loan.save(update_fields=['status'])
 
     def put(self, request, loan_id, repayment_id):
+        """Handles making repayments for a particular loan."""
         try:
             if not self.authenticate_request(request):
                 return Response(data={"error": INVALID_USER_CREDENTIALS}, status=status.HTTP_401_UNAUTHORIZED)
@@ -142,9 +155,12 @@ class RepaymentView(GenericAPIView, AuthMixin):
             # if not is_date_difference_less_than_one_week(loan.created_date, repayment.due_date):
             #     return Response({'error': "error in approving, its past the due date"}, status=HTTP_400_BAD_REQUEST)
 
-            if loan.status != LoanStatus.APPROVED:
+            if loan.status == LoanStatus.PENDING:
                 return Response({'error': "The loan is not approved yet. Repayments can only be done for approved loans"},
                                 status=status.HTTP_400_BAD_REQUEST)
+
+            if loan.status == LoanStatus.PAID:
+                return Response({'error': "All repayments for this loan are already complete"}, status=status.HTTP_200_OK)
 
             repayment_data = self.serializer_class(data=request.data)
 
